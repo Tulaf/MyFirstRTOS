@@ -1,0 +1,9 @@
+#file
+*.o
+*.hex
+Project.*
+
+#path
+Listings/
+Objects/
+
