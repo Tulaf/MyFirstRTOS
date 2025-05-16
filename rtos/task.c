@@ -23,6 +23,7 @@
 TCB_t * volatile pxCurrentTCB = NULL;
 
 /* 任务就绪列表 */
+//static List_t pxReadyTasksLists[ configMAX_PRIORITIES ];
 List_t pxReadyTasksLists[ configMAX_PRIORITIES ];
 
 static volatile UBaseType_t uxCurrentNumberOfTasks 	= ( UBaseType_t ) 0U;
@@ -30,6 +31,14 @@ static UBaseType_t uxTaskNumber 					= ( UBaseType_t ) 0U;
 static TaskHandle_t xIdleTaskHandle					= NULL;
 static volatile TickType_t xTickCount 				= ( TickType_t ) 0U;
 static volatile UBaseType_t uxTopReadyPriority 		= tskIDLE_PRIORITY;
+
+static List_t xDelayedTaskList1;
+static List_t xDelayedTaskList2;
+static List_t * volatile pxDelayedTaskList;
+static List_t * volatile pxOverflowDelayedTaskList;
+
+static volatile TickType_t xNextTaskUnblockTime		= ( TickType_t ) 0U;
+static volatile BaseType_t xNumOfOverflows 			= ( BaseType_t ) 0;
 
 /*
 *************************************************************************
@@ -50,7 +59,8 @@ void prvInitialiseTaskLists( void );
                                     
 static portTASK_FUNCTION( prvIdleTask, pvParameters );
 void vTaskSwitchContext( void );                                    
-                                    
+static void prvAddCurrentTaskToDelayedList( TickType_t xTicksToWait ); 
+static void prvResetNextTaskUnblockTime( void );                                    
 /*
 *************************************************************************
 *                               宏定义
@@ -94,7 +104,7 @@ void vTaskSwitchContext( void );
 
 	/*-----------------------------------------------------------*/
 
-	/* 这两个宏定义只有在选择优化方法时才用，这里定义为空 */
+    /* 这两个宏定义只有在选择优化方法时才用，这里定义为空 */
 	#define taskRESET_READY_PRIORITY( uxPriority )
 	#define portRESET_READY_PRIORITY( uxPriority, uxTopReadyPriority )
     
@@ -109,7 +119,7 @@ void vTaskSwitchContext( void );
 	{																								    \
 	UBaseType_t uxTopPriority;																		    \
 																									    \
-		/* 寻找最高优先级 */								                            \
+		/* 寻找包含就绪任务的最高优先级的队列 */								                            \
 		portGET_HIGHEST_PRIORITY( uxTopPriority, uxTopReadyPriority );								    \
 		/* 获取优先级最高的就绪任务的TCB，然后更新到pxCurrentTCB */                                       \
 		listGET_OWNER_OF_NEXT_ENTRY( pxCurrentTCB, &( pxReadyTasksLists[ uxTopPriority ] ) );		    \
@@ -125,14 +135,30 @@ void vTaskSwitchContext( void );
 		}																								\
 	}
 #else
-    #define taskRESET_READY_PRIORITY( uxPriority )											            \
-    {																							        \
-            portRESET_READY_PRIORITY( ( uxPriority ), ( uxTopReadyPriority ) );					        \
+    #define taskRESET_READY_PRIORITY( uxPriority )											    \
+    {																							\
+            portRESET_READY_PRIORITY( ( uxPriority ), ( uxTopReadyPriority ) );					\
     }
 #endif
     
 #endif /* configUSE_PORT_OPTIMISED_TASK_SELECTION */
                                    
+
+    
+/* 
+ * 当系统时基计数器溢出的时候，延时列表pxDelayedTaskList 和
+ * pxOverflowDelayedTaskList要互相切换
+ */
+#define taskSWITCH_DELAYED_LISTS()\
+{\
+	List_t *pxTemp;\
+	pxTemp = pxDelayedTaskList;\
+	pxDelayedTaskList = pxOverflowDelayedTaskList;\
+	pxOverflowDelayedTaskList = pxTemp;\
+	xNumOfOverflows++;\
+	prvResetNextTaskUnblockTime();\
+}
+
 
 /*
 *************************************************************************
@@ -206,9 +232,7 @@ static void prvInitialiseNewTask( 	TaskFunction_t pxTaskCode,              /* 任
 	/* 任务名字的长度不能超过configMAX_TASK_NAME_LEN */
 	pxNewTCB->pcTaskName[ configMAX_TASK_NAME_LEN - 1 ] = '\0';
     
-    /* 初始化TCB中的xStateListItem节点 */
     vListInitialiseItem( &( pxNewTCB->xStateListItem ) );
-    /* 设置xStateListItem节点的拥有者 */
 	listSET_LIST_ITEM_OWNER( &( pxNewTCB->xStateListItem ), pxNewTCB );
 	
     /* 初始化优先级 */
@@ -231,12 +255,19 @@ static void prvInitialiseNewTask( 	TaskFunction_t pxTaskCode,              /* 任
 /* 初始化任务相关的列表 */
 void prvInitialiseTaskLists( void )
 {
-    UBaseType_t uxPriority;    
+    UBaseType_t uxPriority;
     
+    /* 初始化就绪列表 */
     for( uxPriority = ( UBaseType_t ) 0U; uxPriority < ( UBaseType_t ) configMAX_PRIORITIES; uxPriority++ )
 	{
 		vListInitialise( &( pxReadyTasksLists[ uxPriority ] ) );
 	}
+    
+    vListInitialise( &xDelayedTaskList1 );
+	vListInitialise( &xDelayedTaskList2 );
+    
+    pxDelayedTaskList = &xDelayedTaskList1;
+	pxOverflowDelayedTaskList = &xDelayedTaskList2;
 }
 
 static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
@@ -244,8 +275,7 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 	/* 进入临界段 */
 	taskENTER_CRITICAL();
 	{
-		/* 全局任务计时器加一操作 */
-        uxCurrentNumberOfTasks++;
+		uxCurrentNumberOfTasks++;
         
         /* 如果pxCurrentTCB为空，则将pxCurrentTCB指向新创建的任务 */
 		if( pxCurrentTCB == NULL )
@@ -277,22 +307,6 @@ static void prvAddNewTaskToReadyList( TCB_t *pxNewTCB )
 }
 
 
-#if 0
-extern TCB_t Task1TCB;
-extern TCB_t Task2TCB;
-void vTaskStartScheduler( void )
-{    
-    /* 手动指定第一个运行的任务 */
-    pxCurrentTCB = &Task1TCB;
-    
-    /* 启动调度器 */
-    if( xPortStartScheduler() != pdFALSE )
-    {
-        /* 调度器启动成功，则不会返回，即不会来到这里 */
-    }
-}
-
-#else
 
 extern TCB_t Task1TCB;
 extern TCB_t Task2TCB;
@@ -319,13 +333,10 @@ void vTaskStartScheduler( void )
                                          (UBaseType_t) tskIDLE_PRIORITY,           /* 任务优先级，数值越大，优先级越高 */
 					                     (StackType_t *)pxIdleTaskStackBuffer,     /* 任务栈起始地址 */
 					                     (TCB_t *)pxIdleTaskTCBBuffer );           /* 任务控制块 */
-    /* 将任务添加到就绪列表 */                                 
-    //vListInsertEnd( &( pxReadyTasksLists[0] ), &( ((TCB_t *)pxIdleTaskTCBBuffer)->xStateListItem ) );
-/*======================================创建空闲任务end================================================*/
-                                         
-    /* 手动指定第一个运行的任务 */
-    //pxCurrentTCB = &Task1TCB;
-    
+/*======================================创建空闲任务end================================================*/ 
+    xNextTaskUnblockTime = portMAX_DELAY;
+    xTickCount = ( TickType_t ) 0U;
+
     /* 启动调度器 */
     if( xPortStartScheduler() != pdFALSE )
     {
@@ -333,7 +344,6 @@ void vTaskStartScheduler( void )
     }
 }
 
-#endif
 
 
 static portTASK_FUNCTION( prvIdleTask, pvParameters )
@@ -347,72 +357,14 @@ static portTASK_FUNCTION( prvIdleTask, pvParameters )
     }
 }
 
-#if 1
+
 /* 任务切换，即寻找优先级最高的就绪任务 */
 void vTaskSwitchContext( void )
 {
 	/* 获取优先级最高的就绪任务的TCB，然后更新到pxCurrentTCB */
     taskSELECT_HIGHEST_PRIORITY_TASK();
 }
-#else
-void vTaskSwitchContext( void )
-{
-	/* 如果当前线程是空闲线程，那么就去尝试执行线程1或者线程2，
-       看看他们的延时时间是否结束，如果线程的延时时间均没有到期，
-       那就返回继续执行空闲线程 */
-	if( pxCurrentTCB == &IdleTaskTCB )
-	{
-		if(Task1TCB.xTicksToDelay == 0)
-		{            
-            pxCurrentTCB =&Task1TCB;
-		}
-		else if(Task2TCB.xTicksToDelay == 0)
-		{
-            pxCurrentTCB =&Task2TCB;
-		}
-		else
-		{
-			return;		/* 线程延时均没有到期则返回，继续执行空闲线程 */
-		} 
-	}
-	else
-	{
-		/*如果当前线程是线程1或者线程2的话，检查下另外一个线程,如果另外的线程不在延时中，就切换到该线程
-        否则，判断下当前线程是否应该进入延时状态，如果是的话，就切换到空闲线程。否则就不进行任何切换 */
-		if(pxCurrentTCB == &Task1TCB)
-		{
-			if(Task2TCB.xTicksToDelay == 0)
-			{
-                pxCurrentTCB =&Task2TCB;
-			}
-			else if(pxCurrentTCB->xTicksToDelay != 0)
-			{
-                pxCurrentTCB = &IdleTaskTCB;
-			}
-			else 
-			{
-				return;		/* 返回，不进行切换，因为两个线程都处于延时中 */
-			}
-		}
-		else if(pxCurrentTCB == &Task2TCB)
-		{
-			if(Task1TCB.xTicksToDelay == 0)
-			{
-                pxCurrentTCB =&Task1TCB;
-			}
-			else if(pxCurrentTCB->xTicksToDelay != 0)
-			{
-                pxCurrentTCB = &IdleTaskTCB;
-			}
-			else 
-			{
-				return;		/* 返回，不进行切换，因为两个线程都处于延时中 */
-			}
-		}
-	}
-}
 
-#endif
 
 void vTaskDelay( const TickType_t xTicksToDelay )
 {
@@ -422,17 +374,16 @@ void vTaskDelay( const TickType_t xTicksToDelay )
     pxTCB = pxCurrentTCB;
     
     /* 设置延时时间 */
-    pxTCB->xTicksToDelay = xTicksToDelay;
+    //pxTCB->xTicksToDelay = xTicksToDelay;
     
-    /* 将任务从就绪列表移除 */
-    //uxListRemove( &( pxTCB->xStateListItem ) );
-    taskRESET_READY_PRIORITY( pxTCB->uxPriority );
+    /* 将任务插入到延时列表 */
+    prvAddCurrentTaskToDelayedList( xTicksToDelay );
     
     /* 任务切换 */
     taskYIELD();
 }
 
-
+#if 0
 void xTaskIncrementTick( void )
 {
     TCB_t *pxTCB = NULL;
@@ -440,7 +391,6 @@ void xTaskIncrementTick( void )
     
     const TickType_t xConstTickCount = xTickCount + 1;
     xTickCount = xConstTickCount;
-
     
     /* 扫描就绪列表中所有线程的remaining_tick，如果不为0，则减1 */
 	for(i=0; i<configMAX_PRIORITIES; i++)
@@ -453,6 +403,7 @@ void xTaskIncrementTick( void )
             /* 延时时间到，将任务就绪 */
             if( pxTCB->xTicksToDelay ==0 )
             {
+                //vListInsertEnd( &( pxReadyTasksLists[i] ), &( ((TCB_t *)(&Task1TCB))->xStateListItem ) );
                 taskRECORD_READY_PRIORITY( pxTCB->uxPriority );
             }
 		}
@@ -461,3 +412,119 @@ void xTaskIncrementTick( void )
     /* 任务切换 */
     portYIELD();
 }
+
+#else
+void xTaskIncrementTick( void )
+{
+	TCB_t * pxTCB;
+	TickType_t xItemValue;
+
+	const TickType_t xConstTickCount = xTickCount + 1;
+	xTickCount = xConstTickCount;
+
+	/* 如果xConstTickCount溢出，则切换延时列表 */
+	if( xConstTickCount == ( TickType_t ) 0U )
+	{
+		taskSWITCH_DELAYED_LISTS();
+	}
+
+	/* 最近的延时任务延时到期 */
+	if( xConstTickCount >= xNextTaskUnblockTime )
+	{
+		for( ;; )
+		{
+			if( listLIST_IS_EMPTY( pxDelayedTaskList ) != pdFALSE )
+			{
+				/* 延时列表为空，设置xNextTaskUnblockTime为可能的最大值 */
+				xNextTaskUnblockTime = portMAX_DELAY;
+				break;
+			}
+			else /* 延时列表不为空 */
+			{
+				pxTCB = ( TCB_t * ) listGET_OWNER_OF_HEAD_ENTRY( pxDelayedTaskList );
+				xItemValue = listGET_LIST_ITEM_VALUE( &( pxTCB->xStateListItem ) );
+
+				/* 直到将延时列表中所有延时到期的任务移除才跳出for循环 */
+                if( xConstTickCount < xItemValue )
+				{
+					xNextTaskUnblockTime = xItemValue;
+					break;
+				}
+
+				/* 将任务从延时列表移除，消除等待状态 */
+				( void ) uxListRemove( &( pxTCB->xStateListItem ) );
+
+				/* 将解除等待的任务添加到就绪列表 */
+				prvAddTaskToReadyList( pxTCB );
+			}
+		}
+	}/* xConstTickCount >= xNextTaskUnblockTime */
+    
+    /* 任务切换 */
+    portYIELD();
+}
+#endif
+
+static void prvAddCurrentTaskToDelayedList( TickType_t xTicksToWait )
+{
+    TickType_t xTimeToWake;
+    
+    /* 获取系统时基计数器xTickCount的值 */
+    const TickType_t xConstTickCount = xTickCount;
+
+    /* 将任务从就绪列表中移除 */
+	if( uxListRemove( &( pxCurrentTCB->xStateListItem ) ) == ( UBaseType_t ) 0 )
+	{
+		/* 将任务在优先级位图中对应的位清除 */
+        portRESET_READY_PRIORITY( pxCurrentTCB->uxPriority, uxTopReadyPriority );
+	}
+
+    /* 计算延时到期时，系统时基计数器xTickCount的值是多少 */
+    xTimeToWake = xConstTickCount + xTicksToWait;
+
+    /* 将延时到期的值设置为节点的排序值 */
+    listSET_LIST_ITEM_VALUE( &( pxCurrentTCB->xStateListItem ), xTimeToWake );
+
+    /* 溢出 */
+    if( xTimeToWake < xConstTickCount )
+    {
+        vListInsert( pxOverflowDelayedTaskList, &( pxCurrentTCB->xStateListItem ) );
+    }
+    else /* 没有溢出 */
+    {
+
+        vListInsert( pxDelayedTaskList, &( pxCurrentTCB->xStateListItem ) );
+
+        /* 更新下一个任务解锁时刻变量xNextTaskUnblockTime的值 */
+        if( xTimeToWake < xNextTaskUnblockTime )
+        {
+            xNextTaskUnblockTime = xTimeToWake;
+        }
+    }	
+}
+
+
+static void prvResetNextTaskUnblockTime( void )
+{
+    TCB_t *pxTCB;
+
+	if( listLIST_IS_EMPTY( pxDelayedTaskList ) != pdFALSE )
+	{
+		/* The new current delayed list is empty.  Set xNextTaskUnblockTime to
+		the maximum possible value so it is	extremely unlikely that the
+		if( xTickCount >= xNextTaskUnblockTime ) test will pass until
+		there is an item in the delayed list. */
+		xNextTaskUnblockTime = portMAX_DELAY;
+	}
+	else
+	{
+		/* The new current delayed list is not empty, get the value of
+		the item at the head of the delayed list.  This is the time at
+		which the task at the head of the delayed list should be removed
+		from the Blocked state. */
+		( pxTCB ) = ( TCB_t * ) listGET_OWNER_OF_HEAD_ENTRY( pxDelayedTaskList );
+		xNextTaskUnblockTime = listGET_LIST_ITEM_VALUE( &( ( pxTCB )->xStateListItem ) );
+	}
+}
+
+

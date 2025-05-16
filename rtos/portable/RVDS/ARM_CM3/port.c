@@ -263,7 +263,7 @@ void vPortSetupTimerInterrupt( void )
                                   portNVIC_SYSTICK_INT_BIT | 
                                   portNVIC_SYSTICK_ENABLE_BIT );
     
-//        SysTick_Config( SystemCoreClock / 100 );
+
 }
 
 /*
