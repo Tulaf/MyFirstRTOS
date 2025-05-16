@@ -3,10 +3,9 @@
 
 #include "list.h"
 
+#define tskIDLE_PRIORITY			( ( UBaseType_t ) 0U )
+#define taskYIELD()					portYIELD()
 
-#define taskYIELD()			portYIELD()
-
-/* ÈÎÎñ¾ä±ú */
 typedef void * TaskHandle_t;
 
 
@@ -22,5 +21,9 @@ TaskHandle_t xTaskCreateStatic(	TaskFunction_t pxTaskCode,
 void prvInitialiseTaskLists( void );                                
 void vTaskStartScheduler( void );
 void vTaskSwitchContext( void );
+void vTaskDelay( const TickType_t xTicksToDelay );
+void xTaskIncrementTick( void );
+
                                 
 #endif /* INC_TASK_H */ 
+

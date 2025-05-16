@@ -1,11 +1,16 @@
+/*
+*************************************************************************
+*                             包含的头文件
+*************************************************************************
+*/
 #include "FreeRTOS.h"
 #include "task.h"
-
 
 portCHAR flag1;
 portCHAR flag2;
 
 extern List_t pxReadyTasksLists[ configMAX_PRIORITIES ];
+
 
 TaskHandle_t Task1_Handle;
 #define TASK1_STACK_SIZE                    128
@@ -17,10 +22,11 @@ TaskHandle_t Task2_Handle;
 StackType_t Task2Stack[TASK2_STACK_SIZE];
 TCB_t Task2TCB;
 
-
 void delay (uint32_t count);
 void Task1_Entry( void *p_arg );
 void Task2_Entry( void *p_arg );
+
+
 
 int main(void)
 {	
@@ -33,7 +39,7 @@ int main(void)
 					                  (uint32_t)TASK1_STACK_SIZE ,   /* 任务栈大小，单位为字 */
 					                  (void *) NULL,                 /* 任务形参 */
 					                  (StackType_t *)Task1Stack,     /* 任务栈起始地址 */
-					                  (TCB_t *)&Task1TCB );          /* 任务控制块 */
+					                  (TCB_t *)&Task1TCB );   /* 任务控制块 */
     /* 将任务添加到就绪列表 */                                 
     vListInsertEnd( &( pxReadyTasksLists[1] ), &( ((TCB_t *)(&Task1TCB))->xStateListItem ) );
                                 
@@ -42,7 +48,7 @@ int main(void)
 					                  (uint32_t)TASK2_STACK_SIZE ,   /* 任务栈大小，单位为字 */
 					                  (void *) NULL,                 /* 任务形参 */
 					                  (StackType_t *)Task2Stack,     /* 任务栈起始地址 */
-					                  (TCB_t *)&Task2TCB );          /* 任务控制块 */
+					                  (TCB_t *)&Task2TCB );   /* 任务控制块 */
     /* 将任务添加到就绪列表 */                                 
     vListInsertEnd( &( pxReadyTasksLists[2] ), &( ((TCB_t *)(&Task2TCB))->xStateListItem ) );
                                       
@@ -70,13 +76,20 @@ void Task1_Entry( void *p_arg )
 {
 	for( ;; )
 	{
+#if 0        
 		flag1 = 1;
 		delay( 100 );		
 		flag1 = 0;
 		delay( 100 );
 		
-		/* 任务切换，这里是手动切换 */
-        taskYIELD();
+		/* 线程切换，这里是手动切换 */
+        portYIELD();
+#else
+		flag1 = 1;
+        vTaskDelay( 2 );		
+		flag1 = 0;
+        vTaskDelay( 2 );
+#endif        
 	}
 }
 
@@ -85,13 +98,54 @@ void Task2_Entry( void *p_arg )
 {
 	for( ;; )
 	{
+#if 0        
 		flag2 = 1;
 		delay( 100 );		
 		flag2 = 0;
 		delay( 100 );
 		
-		/* 任务切换，这里是手动切换 */
-        taskYIELD();
+		/* 线程切换，这里是手动切换 */
+        portYIELD();
+#else
+		flag2 = 1;
+        vTaskDelay( 2 );		
+		flag2 = 0;
+        vTaskDelay( 2 );
+#endif        
 	}
 }
+
+/* 获取空闲任务的内存 */
+StackType_t IdleTaskStack[configMINIMAL_STACK_SIZE];
+TCB_t IdleTaskTCB;
+void vApplicationGetIdleTaskMemory( TCB_t **ppxIdleTaskTCBBuffer, 
+                                    StackType_t **ppxIdleTaskStackBuffer, 
+                                    uint32_t *pulIdleTaskStackSize )
+{
+		*ppxIdleTaskTCBBuffer=&IdleTaskTCB;
+		*ppxIdleTaskStackBuffer=IdleTaskStack; 
+		*pulIdleTaskStackSize=configMINIMAL_STACK_SIZE;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
