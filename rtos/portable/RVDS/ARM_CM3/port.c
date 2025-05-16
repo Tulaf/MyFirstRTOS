@@ -27,15 +27,16 @@ static UBaseType_t uxCriticalNesting = 0xaaaaaaaa;
 #define portNVIC_SYSTICK_PRI				( ( ( uint32_t ) configKERNEL_INTERRUPT_PRIORITY ) << 24UL )
 
 
-/* SysTick 配置寄存器 */
 #define portNVIC_SYSTICK_CTRL_REG			( * ( ( volatile uint32_t * ) 0xe000e010 ) )
 #define portNVIC_SYSTICK_LOAD_REG			( * ( ( volatile uint32_t * ) 0xe000e014 ) )
 
 #ifndef configSYSTICK_CLOCK_HZ
 	#define configSYSTICK_CLOCK_HZ configCPU_CLOCK_HZ
-	/* 确保SysTick的时钟与内核时钟一致 */
+	/* Ensure the SysTick is clocked at the same frequency as the core. */
 	#define portNVIC_SYSTICK_CLK_BIT	( 1UL << 2UL )
 #else
+	/* The way the SysTick is clocked is not modified in case it is not the same
+	as the core. */
 	#define portNVIC_SYSTICK_CLK_BIT	( 0 )
 #endif
 
@@ -256,15 +257,13 @@ void vPortExitCritical( void )
 */
 void vPortSetupTimerInterrupt( void )
 {
-     /* 设置重装载寄存器的值 */
+    /* Configure SysTick to interrupt at the requested rate. */
     portNVIC_SYSTICK_LOAD_REG = ( configSYSTICK_CLOCK_HZ / configTICK_RATE_HZ ) - 1UL;
-    
-    /* 设置系统定时器的时钟等于内核时钟
-       使能SysTick 定时器中断
-       使能SysTick 定时器 */
     portNVIC_SYSTICK_CTRL_REG = ( portNVIC_SYSTICK_CLK_BIT | 
-                                  portNVIC_SYSTICK_INT_BIT |
-                                  portNVIC_SYSTICK_ENABLE_BIT ); 
+                                  portNVIC_SYSTICK_INT_BIT | 
+                                  portNVIC_SYSTICK_ENABLE_BIT );
+    
+//        SysTick_Config( SystemCoreClock / 100 );
 }
 
 /*
